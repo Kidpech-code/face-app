@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>High-Performance Face Landmarker</title>
+    <style>
+        body { 
+            margin: 0; 
+            background-color: #050301; 
+            overflow: hidden; 
+            color: white; 
+            font-family: system-ui, -apple-system, sans-serif; 
+        }
+        .container { 
+            position: relative; 
+            width: 100vw; 
+            height: 100vh; 
+        }
+        /* พลิกวิดีโอและแคนวาสให้เป็นกระจก (Mirror effect) */
+        video, canvas { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            object-fit: cover; 
+            transform: scaleX(-1); 
+        }
+        canvas {
+            z-index: 2;
+        }
+        .ui-panel { 
+            position: absolute; 
+            top: 20px; 
+            left: 20px; 
+            z-index: 10; 
+            background: rgba(10, 6, 2, 0.85); 
+            padding: 16px 24px; 
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(8px);
+        }
+        h2 { margin: 0 0 8px 0; font-size: 1.2rem; color: #48CFAD; }
+        p { margin: 0; font-size: 0.9rem; color: #E0E0E0; }
+        .loading { color: #FF6B6B; font-weight: bold; }
+
+        /* Recording controls */
+        .rec-panel {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            background: rgba(10, 6, 2, 0.9);
+            padding: 12px 24px;
+            border-radius: 40px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(8px);
+        }
+        .rec-btn {
+            border: none;
+            border-radius: 24px;
+            padding: 10px 22px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: opacity 0.2s;
+        }
+        .rec-btn:disabled { opacity: 0.35; cursor: default; }
+        .rec-btn.record { background: #FF6B6B; color: #fff; }
+        .rec-btn.stop   { background: #E0E0E0; color: #222; }
+        .rec-btn.export  { background: #48CFAD; color: #fff; }
+        .rec-stats {
+            font-size: 0.8rem;
+            color: #aaa;
+            min-width: 160px;
+            text-align: center;
+        }
+        .rec-dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            background: #FF6B6B;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 50% { opacity: 0.2; } }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        
+        <div class="ui-panel">
+            <h2>Face UI Engine ⚡</h2>
+            <p id="status" class="loading">Loading WASM & AI Model...</p>
+        </div>
+
+        <div class="rec-panel" id="recPanel" style="display:none;">
+            <button class="rec-btn record" id="btnRecord">● Record</button>
+            <button class="rec-btn stop" id="btnStop" disabled>■ Stop</button>
+            <button class="rec-btn export" id="btnExportBin" disabled>↓ Binary</button>
+            <button class="rec-btn export" id="btnExportJSON" disabled>↓ JSON</button>
+            <div class="rec-stats" id="recStats">Ready</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import {
+            FaceLandmarker,
+            FilesetResolver,
+            DrawingUtils
+        } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs";
+        import { FaceDataRecorder } from "./face-data-recorder.js";
+
+        // DOM Elements
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const statusText = document.getElementById("status");
+
+        // Recording UI
+        const recPanel     = document.getElementById("recPanel");
+        const btnRecord     = document.getElementById("btnRecord");
+        const btnStop       = document.getElementById("btnStop");
+        const btnExportBin  = document.getElementById("btnExportBin");
+        const btnExportJSON = document.getElementById("btnExportJSON");
+        const recStats      = document.getElementById("recStats");
+
+        // Recorder instance (blendshapes-only for lean data; set recordLandmarks:true for full 478-point capture)
+        const recorder = new FaceDataRecorder({ maxDurationSec: 300, fps: 60, recordLandmarks: true });
+
+        let faceLandmarker;
+        let lastVideoTime = -1;
+        let statsInterval = null;
+
+        // 1. Initialize the Model (Off Main Thread Delegation)
+        async function initModel() {
+            try {
+                // โหลด WebAssembly Backend
+                const filesetResolver = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+                );
+                
+                // สร้าง Instance ของ Face Landmarker
+                faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        // โหลดโมเดล AI (float16 เพื่อความแม่นยำและรวดเร็ว)
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                        delegate: "GPU" // บังคับใช้ Hardware Acceleration (สำคัญมากสำหรับ Performance)
+                    },
+                    outputFaceBlendshapes: true, // เปิดใช้งานการจับสีหน้า (Blendshapes) เผื่อใช้ต่อยอด
+                    runningMode: "VIDEO",        // โหมดประมวลผลวิดีโอสตรีมต่อเนื่อง
+                    numFaces: 1                  // ตรวจจับ 1 หน้าเพื่อประหยัดทรัพยากร
+                });
+
+                statusText.innerText = "Model Ready. Waiting for camera...";
+                statusText.style.color = "#4FC1E9";
+                recPanel.style.display = "flex";
+                initRecordingUI();
+                startCamera();
+
+            } catch (error) {
+                console.error(error);
+                statusText.innerText = "Error loading model. Check console.";
+            }
+        }
+
+        // 2. Start Camera feed
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+                statusText.innerText = "Tracking Active @ 60FPS";
+                statusText.style.color = "#48CFAD";
+            }).catch((err) => {
+                statusText.innerText = "Camera permission denied!";
+            });
+        }
+
+        // 3. High-Performance Render Loop
+        async function predictWebcam() {
+            // ป้องกัน Layout Thrashing: อัปเดตขนาด Canvas ให้ตรงกับ Video จริงๆ เท่านั้น
+            if (canvasElement.width !== video.videoWidth) {
+                canvasElement.width = video.videoWidth;
+                canvasElement.height = video.videoHeight;
+            }
+
+            let startTimeMs = performance.now();
+            
+            // ประมวลผล AI เฉพาะตอนที่เฟรมวิดีโอเปลี่ยนไปเท่านั้น
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                
+                // สั่งรัน AI Model
+                const results = faceLandmarker.detectForVideo(video, startTimeMs);
+
+                // ── Feed data into recorder (zero-alloc hot path) ──
+                if (recorder.isRecording && results.faceBlendshapes && results.faceBlendshapes.length > 0) {
+                    recorder.recordFrame(
+                        startTimeMs,
+                        results.faceBlendshapes[0].categories,
+                        results.faceLandmarks ? results.faceLandmarks[0] : null
+                    );
+                }
+
+                // เริ่มวาดกราฟิก
+                canvasCtx.save();
+                // วาดภาพวิดีโอลง Canvas เป็นพื้นหลัง
+                canvasCtx.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+                
+                // ถ้าตรวจพบใบหน้า
+                if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+                    // ใช้ DrawingUtils ของ MediaPipe (วาดเร็วกว่าเขียนลูปเอง)
+                    const drawingUtils = new DrawingUtils(canvasCtx);
+                    
+                    for (const landmarks of results.faceLandmarks) {
+                        // 1. วาดโครงตาข่ายใบหน้า (Tesselation) สีจางๆ
+                        drawingUtils.drawConnectors(
+                            landmarks, FaceLandmarker.FACE_LANDMARKS_TESSELATION,
+                            { color: "#FFFFFF30", lineWidth: 1 }
+                        );
+                        // 2. วาดคิ้วและตา
+                        drawingUtils.drawConnectors(
+                            landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE,
+                            { color: "#4FC1E9", lineWidth: 2 }
+                        );
+                        drawingUtils.drawConnectors(
+                            landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE,
+                            { color: "#4FC1E9", lineWidth: 2 }
+                        );
+                        drawingUtils.drawConnectors(
+                            landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYEBROW,
+                            { color: "#FF6B6B", lineWidth: 2 }
+                        );
+                        drawingUtils.drawConnectors(
+                            landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYEBROW,
+                            { color: "#FF6B6B", lineWidth: 2 }
+                        );
+                        // 3. วาดริมฝีปาก
+                        drawingUtils.drawConnectors(
+                            landmarks, FaceLandmarker.FACE_LANDMARKS_LIPS,
+                            { color: "#F5D061", lineWidth: 2 }
+                        );
+                        // 4. วาดกรอบใบหน้า (Face Oval)
+                        drawingUtils.drawConnectors(
+                            landmarks, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL,
+                            { color: "#48CFAD", lineWidth: 2 }
+                        );
+                    }
+                }
+                canvasCtx.restore();
+            }
+
+            // Loop เรียกตัวเองให้สอดคล้องกับ Refresh Rate ของจอภาพ
+            window.requestAnimationFrame(predictWebcam);
+        }
+
+        // ─── Recording UI Logic ─────────────────────────────
+        function initRecordingUI() {
+            btnRecord.addEventListener('click', () => {
+                recorder.start();
+                btnRecord.disabled = true;
+                btnStop.disabled = false;
+                btnExportBin.disabled = true;
+                btnExportJSON.disabled = true;
+                recStats.innerHTML = '<span class="rec-dot"></span>Recording...';
+                statsInterval = setInterval(updateStats, 250);
+            });
+
+            btnStop.addEventListener('click', () => {
+                recorder.stop();
+                clearInterval(statsInterval);
+                btnRecord.disabled = false;
+                btnStop.disabled = true;
+                btnExportBin.disabled = false;
+                btnExportJSON.disabled = false;
+                updateStats();
+            });
+
+            btnExportBin.addEventListener('click', async () => {
+                recStats.textContent = 'Exporting binary...';
+                await recorder.downloadBinary();
+                recStats.textContent = 'Binary saved!';
+            });
+
+            btnExportJSON.addEventListener('click', async () => {
+                recStats.textContent = 'Exporting JSON...';
+                await recorder.downloadJSON();
+                recStats.textContent = 'JSON saved!';
+            });
+        }
+
+        function updateStats() {
+            const frames = recorder.frameCount;
+            const sec = (recorder.durationMs / 1000).toFixed(1);
+            const mb = recorder.memoryUsageMB.toFixed(2);
+            const pct = recorder.bufferUsagePercent.toFixed(1);
+            const dot = recorder.isRecording ? '<span class="rec-dot"></span>' : '';
+            recStats.innerHTML = `${dot}${frames} frames · ${sec}s · ${mb} MB (${pct}%)`;
+        }
+
+        // เริ่มต้นระบบ
+        initModel();
+    </script>
+</body>
+</html>
