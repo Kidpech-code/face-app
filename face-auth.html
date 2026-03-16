@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Auth — Liveness + Recognition</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 40px 20px;
+        }
+
+        .app {
+            max-width: 560px;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            color: #48CFAD;
+            margin-bottom: 6px;
+        }
+        .subtitle {
+            font-size: 0.85rem;
+            color: #777;
+            margin-bottom: 28px;
+        }
+
+        /* ─── Tabs ─────────────────────────────────── */
+        .tabs {
+            display: flex;
+            gap: 2px;
+            margin-bottom: 24px;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            background: #1a1a25;
+            color: #888;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 8px 8px 0 0;
+            transition: background 0.2s, color 0.2s;
+        }
+        .tab-btn.active {
+            background: #252530;
+            color: #48CFAD;
+        }
+
+        /* ─── Video area ───────────────────────────── */
+        .video-wrap {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 4/3;
+            background: #111118;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+        .video-wrap video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        .video-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 16px;
+            pointer-events: none;
+        }
+        .challenge-bar {
+            background: rgba(0,0,0,0.75);
+            backdrop-filter: blur(8px);
+            border-radius: 10px;
+            padding: 12px 18px;
+            text-align: center;
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #F5D061;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .challenge-bar.visible { opacity: 1; }
+
+        /* Face guide oval */
+        .face-guide {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 200px; height: 260px;
+            border: 2px dashed rgba(72, 207, 173, 0.5);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        /* ─── Status + controls ────────────────────── */
+        .status-box {
+            background: #151520;
+            border: 1px solid #252535;
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            min-height: 56px;
+        }
+        .status-box p { margin: 4px 0; font-size: 0.88rem; }
+        .status-label { color: #888; }
+        .status-value { color: #e0e0e0; font-weight: 600; }
+        .status-value.pass { color: #48CFAD; }
+        .status-value.fail { color: #FF6B6B; }
+        .status-value.warn { color: #F5D061; }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #252530;
+            border-radius: 2px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: #48CFAD;
+            border-radius: 2px;
+            transition: width 0.15s;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+        }
+        .btn {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn:disabled { opacity: 0.3; cursor: default; }
+        .btn-primary { background: #48CFAD; color: #0a0a0f; }
+        .btn-secondary { background: #252535; color: #ccc; }
+        .btn-danger { background: #FF6B6B; color: #fff; }
+
+        /* ─── Result card ──────────────────────────── */
+        .result-card {
+            background: #151520;
+            border: 1px solid #252535;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            display: none;
+        }
+        .result-card.show { display: block; }
+        .result-score {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin: 8px 0;
+        }
+        .result-badge {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            margin-top: 4px;
+        }
+        .badge-pass { background: rgba(72,207,173,0.15); color: #48CFAD; }
+        .badge-fail { background: rgba(255,107,107,0.15); color: #FF6B6B; }
+
+        /* ─── Snapshot preview ─────────────────────── */
+        .snapshot-preview {
+            margin-top: 12px;
+            display: none;
+        }
+        .snapshot-preview.show { display: block; }
+        .snapshot-preview canvas {
+            width: 100%;
+            border-radius: 8px;
+            transform: scaleX(-1);
+        }
+        .snapshot-label {
+            font-size: 0.78rem;
+            color: #666;
+            margin-top: 6px;
+        }
+
+        /* Loading spinner */
+        .loader {
+            display: inline-block;
+            width: 14px; height: 14px;
+            border: 2px solid #48CFAD;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+<div class="app">
+    <h1>Face Auth System</h1>
+    <p class="subtitle">Liveness Detection + Face Recognition</p>
+
+    <!-- Tab switcher -->
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="register">Register Face</button>
+        <button class="tab-btn" data-tab="login">Login</button>
+    </div>
+
+    <!-- Camera feed -->
+    <div class="video-wrap">
+        <video id="cam" autoplay playsinline></video>
+        <div class="face-guide"></div>
+        <div class="video-overlay">
+            <div class="challenge-bar" id="challengeBar"></div>
+        </div>
+    </div>
+
+    <!-- Status -->
+    <div class="status-box" id="statusBox">
+        <p><span class="status-label">System: </span><span class="status-value" id="sysStatus"><span class="loader"></span>Loading models...</span></p>
+    </div>
+
+    <!-- Progress bar (for liveness) -->
+    <div class="progress-bar" id="progressBar" style="display:none;">
+        <div class="progress-fill" id="progressFill"></div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="actions" id="actionsRegister">
+        <button class="btn btn-primary" id="btnRegister" disabled>Register My Face</button>
+        <button class="btn btn-danger" id="btnClearReg" disabled>Clear Registration</button>
+    </div>
+    <div class="actions" id="actionsLogin" style="display:none;">
+        <button class="btn btn-primary" id="btnLogin" disabled>Start Login</button>
+    </div>
+
+    <!-- Snapshot preview (registration) -->
+    <div class="snapshot-preview" id="regSnapshot">
+        <div class="snapshot-label">Registered face snapshot</div>
+    </div>
+
+    <!-- Login result -->
+    <div class="result-card" id="resultCard">
+        <p style="font-size:0.85rem; color:#888;">Similarity Score</p>
+        <div class="result-score" id="resultScore">—</div>
+        <div id="resultBadge"></div>
+        <p id="resultDistance" style="font-size:0.8rem; color:#666; margin-top:10px;"></p>
+    </div>
+</div>
+
+<script type="module">
+    // ═══════════════════════════════════════════════════════════
+    //  IMPORTS
+    // ═══════════════════════════════════════════════════════════
+
+    import {
+        FaceLandmarker,
+        FilesetResolver,
+    } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs';
+
+    import { LivenessDetector } from './liveness-detector.js';
+    import { FaceRecognitionEngine } from './face-recognition.js';
+
+    // ═══════════════════════════════════════════════════════════
+    //  DOM REFERENCES
+    // ═══════════════════════════════════════════════════════════
+
+    const cam              = document.getElementById('cam');
+    const challengeBar     = document.getElementById('challengeBar');
+    const statusBox        = document.getElementById('statusBox');
+    const sysStatus        = document.getElementById('sysStatus');
+    const progressBar      = document.getElementById('progressBar');
+    const progressFill     = document.getElementById('progressFill');
+    const btnRegister      = document.getElementById('btnRegister');
+    const btnClearReg      = document.getElementById('btnClearReg');
+    const btnLogin         = document.getElementById('btnLogin');
+    const actionsRegister  = document.getElementById('actionsRegister');
+    const actionsLogin     = document.getElementById('actionsLogin');
+    const regSnapshot      = document.getElementById('regSnapshot');
+    const resultCard       = document.getElementById('resultCard');
+    const resultScore      = document.getElementById('resultScore');
+    const resultBadge      = document.getElementById('resultBadge');
+    const resultDistance    = document.getElementById('resultDistance');
+
+    const tabBtns = document.querySelectorAll('.tab-btn');
+
+    // ═══════════════════════════════════════════════════════════
+    //  STATE
+    // ═══════════════════════════════════════════════════════════
+
+    let faceLandmarker = null;     // MediaPipe Face Landmarker instance
+    const liveness = new LivenessDetector({ timeoutMs: 10_000 });
+    const recognition = new FaceRecognitionEngine();
+
+    let currentTab = 'register';   // 'register' | 'login'
+    let mode = 'idle';             // 'idle' | 'liveness' | 'capturing' | 'done'
+    let registeredDescriptor = null;  // Float32Array(128) or null
+    let lastVideoTime = -1;
+
+    // ═══════════════════════════════════════════════════════════
+    //  INITIALIZATION
+    // ═══════════════════════════════════════════════════════════
+
+    async function init() {
+        try {
+            // Load both engines in parallel
+            const [filesetResolver] = await Promise.all([
+                FilesetResolver.forVisionTasks(
+                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm'
+                ),
+                recognition.init(),
+            ]);
+
+            faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                baseOptions: {
+                    modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                    delegate: 'GPU',
+                },
+                outputFaceBlendshapes: true,
+                runningMode: 'VIDEO',
+                numFaces: 1,
+            });
+
+            setStatus('Models loaded. Camera starting...', 'pass');
+            await startCamera();
+
+            btnRegister.disabled = false;
+            btnLogin.disabled = false;
+            setStatus('Ready. Choose Register or Login.', 'pass');
+
+        } catch (err) {
+            console.error('Init error:', err);
+            setStatus('Failed to load models. Check console.', 'fail');
+        }
+    }
+
+    async function startCamera() {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        });
+        cam.srcObject = stream;
+        await new Promise(r => cam.addEventListener('loadeddata', r, { once: true }));
+        requestAnimationFrame(frameLoop);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  FRAME LOOP — feeds MediaPipe + Liveness detector
+    // ═══════════════════════════════════════════════════════════
+
+    function frameLoop() {
+        if (cam.currentTime !== lastVideoTime) {
+            lastVideoTime = cam.currentTime;
+            const now = performance.now();
+            const results = faceLandmarker.detectForVideo(cam, now);
+
+            if (mode === 'liveness' && results.faceBlendshapes?.length > 0) {
+                const blendshapes = results.faceBlendshapes[0].categories;
+                const landmarks = results.faceLandmarks?.[0] || null;
+
+                const { status, progress } = liveness.feed(blendshapes, landmarks);
+                updateProgress(progress);
+
+                if (status === 'passed') {
+                    onLivenessPassed();
+                } else if (status === 'failed') {
+                    onLivenessFailed();
+                }
+            }
+        }
+        requestAnimationFrame(frameLoop);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  REGISTRATION FLOW
+    // ═══════════════════════════════════════════════════════════
+
+    btnRegister.addEventListener('click', () => {
+        resultCard.classList.remove('show');
+        regSnapshot.classList.remove('show');
+
+        // Start liveness challenge
+        const challenge = liveness.pickChallenge();
+        mode = 'liveness';
+        showChallenge(challenge.instruction);
+        progressBar.style.display = 'block';
+        updateProgress(0);
+        setStatus(`Liveness check: ${challenge.instruction}`, 'warn');
+        btnRegister.disabled = true;
+    });
+
+    async function onRegistrationLivenessPassed() {
+        hideChallenge();
+        progressBar.style.display = 'none';
+        setStatus('Liveness passed! Capturing face...', 'pass');
+        mode = 'capturing';
+
+        // Take a snapshot and extract descriptor
+        const snapshot = recognition.snapshotFromVideo(cam);
+        const descriptor = await recognition.extractDescriptor(snapshot);
+
+        if (!descriptor) {
+            setStatus('No face detected in snapshot. Try again.', 'fail');
+            mode = 'idle';
+            btnRegister.disabled = false;
+            return;
+        }
+
+        // Store the descriptor in memory
+        // SECURITY NOTE: In production, encrypt and send to your backend server.
+        // NEVER store raw biometric data in localStorage.
+        registeredDescriptor = descriptor;
+
+        // Show snapshot preview
+        regSnapshot.innerHTML = '<div class="snapshot-label">Registered face snapshot</div>';
+        regSnapshot.appendChild(snapshot);
+        regSnapshot.classList.add('show');
+
+        setStatus('Face registered successfully! You can now test Login.', 'pass');
+        btnRegister.disabled = false;
+        btnClearReg.disabled = false;
+        mode = 'idle';
+    }
+
+    btnClearReg.addEventListener('click', () => {
+        registeredDescriptor = null;
+        regSnapshot.classList.remove('show');
+        regSnapshot.innerHTML = '';
+        btnClearReg.disabled = true;
+        setStatus('Registration cleared.', 'warn');
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    //  LOGIN FLOW
+    // ═══════════════════════════════════════════════════════════
+
+    btnLogin.addEventListener('click', () => {
+        resultCard.classList.remove('show');
+
+        if (!registeredDescriptor) {
+            setStatus('No face registered yet. Register first!', 'fail');
+            return;
+        }
+
+        // Start liveness challenge
+        const challenge = liveness.pickChallenge();
+        mode = 'liveness';
+        showChallenge(challenge.instruction);
+        progressBar.style.display = 'block';
+        updateProgress(0);
+        setStatus(`Liveness check: ${challenge.instruction}`, 'warn');
+        btnLogin.disabled = true;
+    });
+
+    async function onLoginLivenessPassed() {
+        hideChallenge();
+        progressBar.style.display = 'none';
+        setStatus('Liveness passed! Comparing face...', 'pass');
+        mode = 'capturing';
+
+        // Snapshot + descriptor
+        const snapshot = recognition.snapshotFromVideo(cam);
+        const descriptor = await recognition.extractDescriptor(snapshot);
+
+        if (!descriptor) {
+            setStatus('No face detected. Try again.', 'fail');
+            mode = 'idle';
+            btnLogin.disabled = false;
+            return;
+        }
+
+        // Compare
+        const result = recognition.compare(registeredDescriptor, descriptor);
+
+        // Display result
+        resultScore.textContent = `${result.similarity.toFixed(1)}%`;
+        resultScore.style.color = result.match ? '#48CFAD' : '#FF6B6B';
+        resultDistance.textContent = `Euclidean distance: ${result.distance}`;
+
+        if (result.match) {
+            resultBadge.innerHTML = '<span class="result-badge badge-pass">ACCESS GRANTED</span>';
+            setStatus(`Login successful! (${result.similarity.toFixed(1)}% match)`, 'pass');
+        } else {
+            resultBadge.innerHTML = '<span class="result-badge badge-fail">ACCESS DENIED</span>';
+            setStatus(`Face did not match. (${result.similarity.toFixed(1)}% similarity)`, 'fail');
+        }
+
+        resultCard.classList.add('show');
+        btnLogin.disabled = false;
+        mode = 'idle';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  LIVENESS CALLBACKS
+    // ═══════════════════════════════════════════════════════════
+
+    function onLivenessPassed() {
+        mode = 'idle'; // prevent re-entry
+        if (currentTab === 'register') {
+            onRegistrationLivenessPassed();
+        } else {
+            onLoginLivenessPassed();
+        }
+    }
+
+    function onLivenessFailed() {
+        hideChallenge();
+        progressBar.style.display = 'none';
+        setStatus('Liveness check failed (timeout). Try again.', 'fail');
+        mode = 'idle';
+        btnRegister.disabled = false;
+        btnLogin.disabled = false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  TAB SWITCHING
+    // ═══════════════════════════════════════════════════════════
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentTab = btn.dataset.tab;
+
+            actionsRegister.style.display = currentTab === 'register' ? 'flex' : 'none';
+            actionsLogin.style.display    = currentTab === 'login'    ? 'flex' : 'none';
+            resultCard.classList.remove('show');
+
+            // Reset state
+            mode = 'idle';
+            liveness.reset();
+            hideChallenge();
+            progressBar.style.display = 'none';
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    //  UI HELPERS
+    // ═══════════════════════════════════════════════════════════
+
+    function setStatus(msg, type = '') {
+        sysStatus.textContent = msg;
+        sysStatus.className = 'status-value' + (type ? ` ${type}` : '');
+    }
+
+    function showChallenge(text) {
+        challengeBar.textContent = text;
+        challengeBar.classList.add('visible');
+    }
+    function hideChallenge() {
+        challengeBar.classList.remove('visible');
+    }
+
+    function updateProgress(ratio) {
+        progressFill.style.width = `${Math.round(ratio * 100)}%`;
+    }
+
+    // ─── Boot ────────────────────────────────────────────────
+    init();
+</script>
+</body>
+</html>
